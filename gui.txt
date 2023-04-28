@@ -1,0 +1,230 @@
+# from crypt import methods
+import csv
+from distutils import text_file
+from json import load
+import re
+from shutil import register_unpack_format
+import string
+import pickle
+from tabnanny import verbose
+from typing import final
+import nltk
+from distutils.log import debug
+from operator import sub
+import numpy as np
+import prepo_lib as prepo
+from flask import Flask, request, jsonify, render_template
+from flask_paginate import Pagination, get_page_args
+from keras_preprocessing.sequence import pad_sequences
+from keras.models import model_from_json, load_model
+nltk.download('punkt')
+
+app = Flask(__name__)
+
+with open('data/model/Saved_Tokenize1.pickle', 'rb') as handle:
+    tokenizer = pickle.load(handle)
+
+json_file = open("data/model/saved_model_sentimen_sg.json", 'r')
+model_json = json_file.read()
+model = model_from_json(model_json)
+
+model.load_weights("data/model/saved_model_sentimen_sg.h5")
+#model = load_model("data/model/saved_model_sentimen_sg1.h5",compile=False)  # notenk
+class_category = ['POSITIF', 'NETRAL', 'NEGATIF']
+
+MAX_SEQUENCE_LENGTH = 100
+EMBEDDING_DIM = 300
+
+
+@app.route('/')
+def home():
+    return render_template("index.html", debug=True)
+
+
+@app.route('/index.html')
+def dash():
+    return render_template("index.html", debug=True)
+
+
+@app.route('/datalatih.html')
+def datalatih():
+    # page, per_page, offset = get_page_args(
+    #     page_parameter="p", per_page_parameter="pp", pp=20
+    # )
+    with open('data/data_train_prepo.csv', encoding='unicode_escape') as csv_file:
+        data = csv.reader(csv_file, delimiter=',')
+        first_line = True
+        dataset = []
+        for row in data:
+            if not first_line:
+                dataset.append({
+                    "content": row[2],
+                    "sentimen": row[5],
+                    "label": row[4]
+                })
+            else:
+                first_line = False
+    # pagination = Pagination(
+    #     page=page, total=len(dataset), record_name='dataset')
+    return render_template("datalatih.html", len=len(dataset), dataset=dataset, debug=True)
+
+
+@app.route('/dataklasifikasi.html', methods=["POST", "GET"])
+def dataklasifikasi():
+    with open('data/hasil_prediksi.csv', encoding='unicode_escape') as csv_file:
+        data = csv.reader(csv_file, delimiter=',')
+        first_line = True
+        dataset = []
+        for row in data:
+            if not first_line:
+                dataset.append({
+                    "content": row[1],
+                    "label": row[2],
+                    "predict": row[3]
+                })
+            else:
+                first_line = False
+    return render_template("dataklasifikasi.html", len=len(dataset), dataset=dataset, debug=True)
+
+
+@app.route('/sentimen.html')
+def ceksentimen():
+    # dataset = []
+    return render_template("sentimen.html",  debug=True)
+
+
+@app.route('/hasilsentimen.html', methods=["GET"])
+def hasilsentimen():
+
+    subject = request.args.get("sub")
+    subject = [subject]
+
+    # # casefolding
+    test_casefolding = []
+    for i in range(len(subject)):
+        if subject[i].islower() == True:
+            test_casefolding = subject[i]
+        else:
+            test_casefolding = prepo.case_folding(subject[i])
+
+    casefolding = test_casefolding
+
+    # Cleaning Data
+    removenum = prepo.cleaning(casefolding)
+    # Slangword
+    slangword_ = prepo.slangword(removenum)
+    # # Stemming
+    stemming_ = prepo.stemming(slangword_)
+    # Negation Handling
+    if 'tidak' in stemming_:
+        negation_ = prepo.ganti_negasi(stemming_)
+    else:
+        negation_ = stemming_
+    # # Stopword
+    remove_stop_words = prepo.removeStopword(negation_)
+    # Tokenize
+    hasil_token = prepo.tokenize(remove_stop_words)
+    # Text Final
+    final = prepo.text_final(hasil_token)
+    text_final_ = str(final)
+
+    # CNN + Negation
+    tokenizer.fit_on_texts([hasil_token])
+    print("token : ", len(tokenizer.word_index))
+    sequences = tokenizer.texts_to_sequences(
+        [hasil_token])  # untuk meprediksi kata tetangga
+    print('sequences :', sequences)
+
+    test_cnn_data = pad_sequences(
+        sequences, maxlen=MAX_SEQUENCE_LENGTH)
+    x_test = test_cnn_data
+    print('x_test :', x_test)
+
+    # predictions = model.predict(x_test, batch_size=10, verbose=2)
+    predictions = model.predict(x_test)
+
+    prob_sg = predictions
+    class_sg = class_category[predictions.argmax()]
+
+    return render_template("hasilsentimen.html",
+                           subject=subject,
+                           casefolding=casefolding,
+                           removenum=removenum,
+                           slangword_=slangword_,
+                           negation_=negation_,
+                           hasil_token=hasil_token,
+                           remove_stop_words=remove_stop_words,
+                           stemming_=stemming_,
+                           text_final_=text_final_,
+                           prob_sg=prob_sg,
+                           class_sg=class_sg,
+                           debug=True)
+
+
+@app.route('/sentimen_non.html', methods=["GET"])
+def sentimen_non():
+    return render_template("sentimen_non.html", debug=True)
+
+
+@app.route('/hasilsentimen_non.html', methods=["POST", "GET"])
+def hasilsentimen_non():
+    subject = request.args.get("sub")
+    subject = [subject]
+
+    # # casefolding
+    test_casefolding = []
+    for i in range(len(subject)):
+        if subject[i].islower() == True:
+            test_casefolding = subject[i]
+        else:
+            test_casefolding = prepo.case_folding(subject[i])
+
+    casefolding = test_casefolding
+
+    # Cleaning Data
+    removenum = prepo.cleaning(casefolding)
+    # Slangword
+    slangword_ = prepo.slangword(removenum)
+    # # Stemming
+    stemming_ = prepo.stemming(slangword_)
+    # # Stopword
+    remove_stop_words1 = prepo.removeStopword(stemming_)
+    # Tokenize
+    hasil_token1 = prepo.tokenize(remove_stop_words1)
+    # Text Final
+    final = prepo.text_final(hasil_token1)
+    text_final_ = str(final)
+
+    # CNN + Non Negation
+    tokenizer.fit_on_texts([hasil_token1])
+    print("token : ", len(tokenizer.word_index))
+    sequences1 = tokenizer.texts_to_sequences([hasil_token1])
+    print('sequences :', sequences1)
+
+    test_cnn_data1 = pad_sequences(
+        sequences1, maxlen=MAX_SEQUENCE_LENGTH)
+    x_test1 = test_cnn_data1
+    print('x_test :', x_test1)
+
+    # predictions1 = model.predict(x_test1, batch_size=10, verbose=2)
+    predictions1 = model.predict(x_test1)
+
+    prob_sg_non = predictions1
+    class_sg_non = class_category[predictions1.argmax()]
+
+    return render_template("sentimen_non.html",
+                           subject=subject,
+                           casefolding=casefolding,
+                           removenum=removenum,
+                           slangword_=slangword_,
+                           hasil_token=hasil_token1,
+                           remove_stop_words=remove_stop_words1,
+                           stemming_=stemming_,
+                           text_final_=text_final_,
+                           prob_sg_non=prob_sg_non,
+                           class_sg_non=class_sg_non,
+                           debug=True)
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
